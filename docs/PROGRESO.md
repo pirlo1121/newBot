@@ -239,6 +239,8 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 
 | 005 | 2026-11-24 | Incidente: IA afirmaba cambios no guardados | En la primera prueba real con DeepSeek el bot dijo haber definido el límite de $450.000, pagado grok/claude/paramount y registrado uber/hamburguesa/valentina, pero no llamó al backend (la base no tenía nada de eso). Causas: el historial guardaba solo texto (el modelo imitaba "listo" sin llamadas), el orquestador no verificaba la respuesta y el prompt no era tajante. Arreglo: historial por turnos completos con herramientas; verificación de la respuesta final (`src/ai/guard.js`) con hasta 2 correcciones y texto seguro si insiste; reglas de ejecución A–E en el prompt; `consultar_gastos` admite `orden`, `desde` y `hasta`; temperatura 0.2. 92 tests (incluye réplica del incidente con IA falsa). Réplica de la conversación completa con DeepSeek real: todas las afirmaciones coinciden con la base. | El usuario corrige los datos de su base real y reinicia el bot |
 
+| 006 | 2026-11-24 | Material para clase | `plan.pdf` (22 páginas): lógica de negocio paso a paso, ejemplo de un mes, modelo de datos, API, capa de IA, preparación para Claude Code/Codex/OpenCode (CLAUDE.md con `@AGENTS.md`), fases 0-11 con prompt y verificación, prompt inicial, prueba de aceptación común y lecciones. Prompt inicial también en `docs/prompt-inicial.txt`. Modelo: DeepSeek hoy, GPT Luna 6 después. | Usar en clase |
+
 > Al cerrar una sesión, agregar una fila con lo hecho, lo que quedó a medias y el siguiente paso exacto.
 
 ---

@@ -1,0 +1,215 @@
+Vas a construir "Finanzas Bot", una aplicación personal para gestionar dinero desde Telegram.
+Trabajaremos por fases. En ESTA sesión NO escribas código de la aplicación: solo crea la
+documentación base, haz el commit y espera mi aprobación.
+
+=== CONTEXTO DEL PRODUCTO ===
+- Un solo usuario, en Colombia. Moneda COP. Zona horaria America/Bogota.
+- Todo texto de cara al usuario va en español (Colombia). Identificadores, tablas y campos en inglés.
+- El usuario escribe en lenguaje natural a un bot de Telegram ("gasté 45.000 en una cena",
+  "¿cuánto me queda?"). El bot envía el mensaje a un modelo de IA con function calling.
+  El modelo llama herramientas; cada herramienta llama una API HTTP interna. SOLO la API lee y
+  escribe en SQLite. El modelo nunca ve la base de datos ni calcula cifras: recibe resultados
+  ya calculados y formateados, y redacta la respuesta.
+- Modelo de IA: hoy DeepSeek (AI_BASE_URL=https://api.deepseek.com/v1, AI_MODEL=deepseek-chat).
+  Más adelante "GPT Luna 6". El proveedor se cambia solo con variables de entorno. El cliente
+  usa fetch contra /chat/completions (formato compatible con OpenAI, con tools), sin SDK.
+
+=== STACK OBLIGATORIO (no lo cambies) ===
+Node.js >= 24 con ESM ("type": "module"), Express 5, SQLite con el módulo nativo node:sqlite
+(DatabaseSync; NO better-sqlite3, NO ORM), zod (validación), dayjs con plugins utc y timezone,
+grammY (bot, long polling), pino + pino-http (logs JSON), dotenv. Pruebas con node:test y
+supertest. JavaScript sin TypeScript. Estilo: 2 espacios, punto y coma, comillas simples.
+
+=== PRINCIPIOS NO NEGOCIABLES ===
+1. La IA no toca la base de datos: solo llama endpoints HTTP con header X-Api-Key.
+2. El backend calcula todo (totales, saldos, porcentajes, ahorro, cierres) y lo devuelve formateado.
+3. El dinero se guarda en ENTEROS de centavos (columnas *_cents). Nunca REAL/FLOAT.
+4. Los cierres mensuales son idempotentes y transaccionales.
+5. Ninguna escritura en periodos cerrados (409 PERIOD_CLOSED).
+6. Secretos solo en .env (nunca en git).
+7. La IA nunca afirma "registré/pagué/eliminé" si en ese turno no llamó la herramienta y
+   recibió ok: true. El orquestador lo verifica (ver "Capa de IA").
+
+=== REGLAS DE NEGOCIO ===
+RN-01 Salario: monto > 0 y día de pago 1-31 (por defecto 1). Si el día no existe en el mes,
+      se usa el último día (31 -> 30/28/29).
+RN-02 Cambiar el salario INSERTA una fila de historial con effective_from (hoy por defecto); no
+      reescribe cierres. Si no se envía pay_day se conserva el del salario vigente. El salario
+      de un mes es la última fila con effective_from <= último día de ese mes.
+RN-03 Ingreso extra: descripción, monto > 0, fecha (por defecto hoy).
+RN-04 Gasto fijo = plantilla (nombre, monto, día de pago) + una instancia ("factura") por mes,
+      que nace pendiente. Crear una plantilla crea la factura del periodo activo.
+RN-05 Editar una plantilla actualiza la factura del periodo activo solo si está pendiente.
+      Borrar una plantilla elimina sus facturas pendientes de periodos abiertos y conserva las
+      pagadas (fixed_expense_id queda NULL; nombre y monto son snapshot).
+RN-06 Pagar una factura: paid = 1 y paid_at (fecha, hoy por defecto, nunca futura). Pagar dos
+      veces -> 409 ALREADY_PAID. Una factura está vencida si no está pagada y due_date < hoy.
+RN-07 Gasto extra: nombre, monto > 0, categoría opcional (salidas, comida, transporte,
+      emergencias, lujo; NULL = sin categoría) y fecha (hoy por defecto; nunca futura).
+RN-08 Límite mensual de gastos extras: se guarda en settings y se copia al periodo cuando se crea.
+      Cambiarlo actualiza el periodo activo y recalcula avisos.
+RN-09 Avisos: umbral 80 % = ceil(límite*80/100) y 100 % = límite. Un aviso por umbral y por
+      mes. Si una operación cruza ambos, solo se envía el de 100 % (el de 80 % queda marcado).
+      Borrar o editar gastos NO rearma avisos. Cambiar el límite sí: si el acumulado queda por
+      debajo de un umbral ya avisado se limpia su marca; si queda por encima de uno no avisado,
+      se encola.
+RN-10 Saldo del periodo = salario + ingresos extras - gastos fijos PAGADOS - gastos extras.
+      Las facturas pendientes no descuentan. Puede ser negativo. Es "devengado": incluye el
+      salario del mes aunque el día de pago no haya llegado.
+RN-11 Periodo = mes calendario 'YYYY-MM'. Periodo activo = mes de hoy en Bogotá. Los meses
+      anteriores siguen abiertos hasta su cierre.
+RN-12 El mes M se cierra cuando llega el día de pago del salario en M+1 (con el pay_day del
+      salario vigente; sin salario, día 1). Job diario a las 00:05 de Bogotá Y verificación al
+      inicio de cada request (procesa todos los meses vencidos, en orden).
+RN-13 El cierre guarda: salario, ingresos extras, fijos pagados, gastos extras, desglose por
+      categoría (incluye 'sin_categoria'), categoría mayor y menor, saldo, ahorro y déficit.
+RN-14 ahorro = max(saldo, 0) y se suma al ahorro general (una sola cuenta). Si el saldo es
+      negativo, déficit = -saldo y el ahorro no se toca.
+RN-15 Mayor/menor: total descendente, nombre ascendente como desempate; 'sin_categoria' cuenta
+      como categoría. Con una sola categoría, menor = NULL. Sin gastos, ambas NULL.
+RN-16 Tras cerrar M: se crea M+1 si no existe, se generan sus facturas pendientes y toma el
+      límite vigente. Se encola una notificación 'cierre_mensual' con el reporte en texto.
+RN-17 Periodos cerrados: solo lectura (409 PERIOD_CLOSED). Un mes anterior SIN fila en periods
+      cuenta como cerrado si su fecha de cierre ya pasó; si no, se crea sin facturas. Meses
+      futuros -> 400.
+RN-18 Fechas de negocio en America/Bogota: un gasto a las 23:30 del 30 de noviembre es de
+      noviembre.
+RN-19 Dinero: máximo 1.000.000.000.000 centavos ($10.000 millones). Formato es-CO sin
+      decimales ("$3.500.000"); los centavos solo se muestran si existen ("$900.000,50").
+RN-20 Toda escritura que toque más de una tabla va en una transacción (BEGIN IMMEDIATE).
+
+Parseo de montos (texto en pesos -> centavos):
+"900.000" -> 90000000 | "900000" -> 90000000 | "$ 1.250.500" -> 125050000 |
+"900.000,50" -> 90000050 | "900000.50" -> 90000050 (punto decimal si no hay grupos de 3).
+Se rechazan negativos, cero, más de 2 decimales, texto inválido y montos sobre el máximo.
+La API acepta amount_cents (entero) o amount (texto/número en pesos); si vienen ambos gana
+amount_cents.
+
+=== MODELO DE DATOS (SQLite) ===
+users(id, telegram_user_id UNIQUE, name, timezone, created_at)  -- un solo "dueño": la 1.ª fila
+settings(user_id PK, monthly_limit_cents, updated_at)
+salary_history(id, user_id, amount_cents, pay_day, effective_from, created_at)
+periods(id, user_id, period 'YYYY-MM', status open|closed, limit_cents, alert_80_at,
+        alert_100_at, closed_at, UNIQUE(user_id, period))
+fixed_expenses(id, user_id, name, amount_cents, due_day, active, created_at, updated_at)
+fixed_expense_instances(id, user_id, fixed_expense_id NULL ON DELETE SET NULL, period, name,
+        amount_cents, due_date, paid 0|1, paid_at, created_at,
+        UNIQUE(user_id, fixed_expense_id, period))
+extra_incomes(id, user_id, description, amount_cents, date, period, created_at, updated_at)
+extra_expenses(id, user_id, name, amount_cents, category NULL|5 valores, date, period, ...)
+period_closures(id, user_id, period, salary_cents, extra_income_cents, fixed_paid_cents,
+        extra_expense_cents, balance_cents, saved_cents >= 0, deficit_cents >= 0,
+        top_category, bottom_category, closed_at, UNIQUE(user_id, period))
+closure_category_totals(closure_id, category, total_cents, PK(closure_id, category))
+savings(user_id PK, balance_cents >= 0, updated_at)
+savings_movements(id, user_id, amount_cents, type cierre|ajuste, period, closure_id, created_at)
+notifications(id, user_id, type limite_80|limite_100|cierre_mensual, period, payload_json,
+        text, created_at, delivered_at)   -- outbox: el backend redacta, el bot entrega
+idempotency_keys(user_id, key, fingerprint, status, response_json, created_at)  -- Fase 11
+Todas con CHECK (montos > 0, categorías válidas, 0|1) y claves foráneas. Fechas de negocio
+TEXT 'YYYY-MM-DD'; marcas de tiempo TEXT ISO UTC. PRAGMAs en la conexión: journal_mode=WAL,
+foreign_keys=ON, busy_timeout=5000. Migraciones .sql numeradas con tabla schema_migrations.
+
+=== API INTERNA ===
+Base http://127.0.0.1:3000 (solo loopback). Header X-Api-Key en todo /api/*. /health es público.
+Éxito: { "ok": true, "data": {...}, "meta": { "today": "YYYY-MM-DD", "period": "YYYY-MM" } }
+Error: { "ok": false, "error": { "code", "message" (español), "details": [] } }
+Códigos: VALIDATION_ERROR 400, UNAUTHORIZED 401, NOT_FOUND 404, PERIOD_CLOSED 409,
+ALREADY_PAID 409, CONFLICT 409, RATE_LIMITED 429, INTERNAL_ERROR 500 (sin detalles internos).
+Antes de cada request /api: resolver el dueño, procesar cierres vencidos, asegurar el periodo
+activo. Listados: periodo activo por defecto; paginación limit (máx. 100, def. 20) y offset.
+En el código, cada ruta lleva un comentario con método y URL completa.
+
+GET  /health                                   estado + SELECT 1
+GET  /api/context                              resumen para la IA (hoy, mes, salario, límite,
+                                               saldo, ahorro, facturas pendientes, último cierre)
+GET  /api/notifications/pending                outbox sin entregar (máx. 50)
+POST /api/notifications/{id}/ack               marcar entregada
+GET  /api/salary | PUT /api/salary | GET /api/salary/history
+GET  /api/incomes?period= | POST /api/incomes | PATCH /api/incomes/{id} | DELETE /api/incomes/{id}
+GET  /api/fixed-expenses | POST /api/fixed-expenses | PATCH|DELETE /api/fixed-expenses/{id}
+GET  /api/fixed-expenses/instances?period=&status=pending|paid|all
+POST /api/fixed-expenses/instances/{id}/pay    (devuelve también el saldo)
+GET  /api/expenses?period=&category=&from=&to=&sort=date|amount&order=asc|desc&limit=&offset=
+POST /api/expenses (devuelve alerts y estado del límite) | PATCH|DELETE /api/expenses/{id}
+GET  /api/expenses/recent?limit=10
+GET  /api/expenses/by-day?days=3               hoy + 3 días anteriores, con subtotales
+GET  /api/expenses/by-category?period=         totales y porcentajes
+GET  /api/limits/current | PUT /api/limits/monthly
+GET  /api/balance?period=
+GET  /api/savings | GET /api/savings/movements
+GET  /api/closures?limit=12 | GET /api/closures/latest | GET /api/closures/{period}
+POST /api/closures/run  { "dry_run": true|false }
+
+=== CAPA DE IA ===
+Herramientas (nombres y argumentos en español; el código traduce al contrato en inglés):
+consultar_contexto(); consultar_saldo(periodo?); configurar_salario(monto, dia_pago?);
+registrar_ingreso_extra(descripcion, monto, fecha?); editar_ingreso_extra(id, ...);
+eliminar_ingreso_extra(id); crear_gasto_fijo(nombre, monto, dia_pago);
+editar_gasto_fijo(id, ...); eliminar_gasto_fijo(id);
+consultar_facturas(estado pendientes|pagadas|todas, periodo?); pagar_factura(factura_id);
+registrar_gasto_extra(nombre, monto, categoria?, fecha?); editar_gasto_extra(id, ...;
+categoria "sin_categoria" la quita); eliminar_gasto_extra(id);
+consultar_gastos(vista recientes|por_dias|por_categoria|por_monto, dias?, periodo?, limite?,
+categoria?, orden asc|desc?, desde?, hasta?); definir_limite_mensual(monto);
+consultar_limite(); consultar_ahorro(); consultar_cierre_mensual(periodo?).
+- Cada herramienta tiene esquema zod (se exporta como JSON Schema con z.toJSONSchema). Si los
+  argumentos no validan, se devuelve el error al modelo como resultado y NO se llama a la API.
+- Máximo 6 rondas de herramientas por mensaje; timeout 30 s por llamada al modelo y 10 s al
+  backend; listas recortadas a 20 elementos; temperatura 0.2.
+- Historial en memoria por chat: últimos 10 TURNOS COMPLETOS (mensaje del usuario, llamadas a
+  herramientas, resultados y respuesta). Nunca guardar solo el texto.
+- Verificación de la respuesta final: si afirma un cambio ("registré", "pagué", "quedó
+  configurado", "definido en $...") sin una herramienta de escritura con ok: true en el turno,
+  o da cifras sin haber consultado nada y sin preguntar, se devuelve al modelo con una
+  corrección del sistema (máx. 2). Si insiste, el usuario recibe "No pude confirmar que el
+  cambio quedara guardado...", nunca la afirmación falsa.
+- Prompt de sistema: español breve y tuteo; no inventar; usar siempre herramientas; pedir
+  confirmación antes de pagar, eliminar o cambiar salario/límite (una afirmación clara del
+  usuario como "ya pagué el arriendo" es confirmación); confirmar montos ambiguos ("20 lukas",
+  "900"); fechas relativas con la fecha de hoy; explicar PERIOD_CLOSED/ALREADY_PAID; avisos
+  de límite solo si vienen en el resultado; sin asesoría financiera; una llamada por elemento;
+  texto plano sin Markdown.
+
+=== BOT DE TELEGRAM ===
+grammY con long polling. Lista blanca ALLOWED_TELEGRAM_USER_IDS (otros se ignoran y se
+registran). Rate limit 20 mensajes/minuto por usuario, máximo 1000 caracteres. Comandos
+/start y /ayuda. Tras cada respuesta, y cada 60 s, entregar la outbox (leer pendientes por la
+API, enviar, hacer ack). Backend, bot y scheduler corren en el mismo proceso; si faltan
+TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS o AI_MODEL, solo corre la API y lo avisa en el log.
+
+=== VARIABLES DE ENTORNO (.env y .env.example) ===
+NODE_ENV, PORT=3000, HOST=127.0.0.1, DB_PATH=./data/finanzas.db, TZ=America/Bogota,
+INTERNAL_API_KEY (obligatoria, >= 16 caracteres), TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS,
+AI_BASE_URL=https://api.deepseek.com/v1, AI_API_KEY, AI_MODEL=deepseek-chat, LOG_LEVEL=info.
+Dejar comentado en .env.example que el modelo previsto es "GPT Luna 6".
+
+=== ENTREGABLES DE ESTA SESIÓN ===
+1. AGENTS.md: especificación completa con TODO lo anterior, organizada en secciones: resumen y
+   principios, alcance (incluido / fuera de alcance), arquitectura y flujo de un mensaje,
+   stack, estructura de carpetas (src/{db,domain,repositories,services,routes,middleware,
+   ai,telegram}, scripts/, tests/{unit,integration,e2e}), modelo de datos con el SQL completo,
+   reglas RN-01..RN-20, API (método + URL completa por endpoint y ejemplos JSON), catálogo de
+   herramientas, reglas del prompt, variables de entorno, convenciones, estrategia de pruebas
+   (reloj inyectable createApp({ clock }), base :memory: por test, servidor de IA falso) y
+   decisiones de diseño.
+2. docs/PROGRESO.md: plan por fases con checkboxes y criterio de aceptación, más una bitácora:
+   Fase 0 documentación; 1 esqueleto Express (/health, X-Api-Key, config con zod, errores);
+   2 base de datos y migraciones; 3 dominio puro (dinero, fechas, categorías);
+   4 salario e ingresos; 5 gastos fijos y facturas; 6 gastos extras, límite y avisos;
+   7 saldo y consultas; 8 cierre mensual y ahorro; 9 herramientas de IA; 10 orquestador
+   y bot de Telegram; 11 endurecimiento (Idempotency-Key, backups, rate limit, systemd).
+3. CLAUDE.md con una sola línea: @AGENTS.md  (así Claude Code, Codex y OpenCode leen las
+   mismas instrucciones).
+4. .gitignore (node_modules, .env, data, coverage), git init y commit
+   "docs: especificación y plan de implementación".
+
+=== REGLAS DE TRABAJO PARA TODAS LAS SESIONES ===
+- Al empezar: leer AGENTS.md y docs/PROGRESO.md, revisar git log y correr npm test.
+- Implementar SOLO la fase indicada. Al terminar: pruebas verdes, checkboxes y bitácora al
+  día, commit convencional (feat:, fix:, docs:, test:).
+- No cambiar reglas ni contrato de la API sin actualizar AGENTS.md.
+- Si algo es ambiguo, preguntar en vez de inventar.
+- Probar el dinero con centavos explícitos y las fechas con reloj inyectado.
+
+Cuando termines, muéstrame un resumen de los archivos creados y espera mis comentarios.
