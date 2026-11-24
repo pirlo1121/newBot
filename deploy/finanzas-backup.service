@@ -1,0 +1,10 @@
+# Backup diario con VACUUM INTO y retención de 30 días.
+[Unit]
+Description=Backup de la base de Finanzas Bot
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspaces/bit/prueba1Finanzas
+EnvironmentFile=%h/workspaces/bit/prueba1Finanzas/.env
+ExecStart=/usr/bin/node scripts/backup.js
+UMask=0077

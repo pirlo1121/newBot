@@ -1,0 +1,27 @@
+# Unidad systemd de ejemplo (Fase 11).
+# Instalar como servicio de usuario:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/finanzas-bot.service ~/.config/systemd/user/
+#   # ajustar WorkingDirectory si el proyecto está en otra ruta
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now finanzas-bot
+#   journalctl --user -u finanzas-bot -f
+[Unit]
+Description=Finanzas Bot (API + bot de Telegram + cierres diarios)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspaces/bit/prueba1Finanzas
+EnvironmentFile=%h/workspaces/bit/prueba1Finanzas/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

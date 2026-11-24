@@ -50,3 +50,57 @@ export function createTestApp({ now = '2026-11-24T10:00', env = {} } = {}) {
     del: (path) => call('delete', path)
   };
 }
+
+/** Levanta la app de pruebas en un puerto efímero de loopback. */
+export async function listen(app) {
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const { port } = server.address();
+  return { baseUrl: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
+}
+
+/**
+ * Servidor falso compatible con OpenAI: responde en orden los mensajes del
+ * guion y guarda cada petición recibida.
+ */
+export async function fakeAiServer(script) {
+  const { createServer } = await import('node:http');
+  const requests = [];
+  let index = 0;
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => {
+      const body = JSON.parse(raw);
+      requests.push({ headers: req.headers, url: req.url, body });
+      const step = typeof script === 'function' ? script(body, index) : script[Math.min(index, script.length - 1)];
+      index += 1;
+      if (step?.status) {
+        res.writeHead(step.status).end('falla');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: step }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+    requests,
+    close: () => new Promise((r) => server.close(r))
+  };
+}
+
+let callSeq = 0;
+/** Mensaje del asistente que pide herramientas. */
+export const toolCall = (...calls) => ({
+  role: 'assistant',
+  content: null,
+  tool_calls: calls.map(([name, args]) => ({
+    id: `call_${++callSeq}`,
+    type: 'function',
+    function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}) }
+  }))
+});
+export const say = (content) => ({ role: 'assistant', content });

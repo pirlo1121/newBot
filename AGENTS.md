@@ -3,7 +3,7 @@
 Documento maestro de la aplicación. Es la fuente de verdad para cualquier persona o agente que trabaje en el repositorio. El plan de implementación y la bitácora de sesiones están en [`docs/PROGRESO.md`](docs/PROGRESO.md).
 
 - **Última actualización:** 2026-11-24
-- **Estado:** Fase 1 completada (esqueleto del backend). Siguiente: Fase 2 (base de datos y migraciones).
+- **Estado:** v1 completa (fases 0–11). Pendiente: probar con token real de Telegram y proveedor de IA, y confirmar las decisiones abiertas (§17). La Fase 12 (correcciones tras el cierre) es opcional.
 - **Idioma del producto:** español (Colombia), moneda COP.
 
 ---
@@ -146,7 +146,9 @@ prueba1Finanzas/
 ├── README.md                     # uso para el usuario final (Fase 10)
 ├── docs/
 │   └── PROGRESO.md               # plan por fases + bitácora
+├── deploy/                       # unidades systemd de ejemplo (servicio y backup)
 ├── scripts/
+│   ├── migrate.js
 │   ├── seed.js
 │   ├── run-closure.js
 │   └── backup.js
@@ -154,12 +156,15 @@ prueba1Finanzas/
 │   ├── server.js                 # arranque: API + bot + scheduler
 │   ├── app.js                    # app Express (sin listen, testeable)
 │   ├── config.js                 # env validado con zod
+│   ├── errors.js                 # AppError y helpers de códigos
+│   ├── scheduler.js              # job diario 00:05 America/Bogota
 │   ├── db/
 │   │   ├── connection.js
 │   │   ├── migrate.js
 │   │   ├── transaction.js
 │   │   └── migrations/
-│   │       └── 001_init.sql
+│   │       ├── 001_init.sql
+│   │       └── 002_idempotency.sql
 │   ├── domain/
 │   │   ├── money.js              # parse/format/validación COP
 │   │   ├── dates.js              # hoy, periodos, día de pago, clamp
@@ -168,15 +173,19 @@ prueba1Finanzas/
 │   ├── repositories/
 │   ├── services/
 │   ├── routes/
-│   ├── middleware/               # auth, requestId, errores
+│   ├── middleware/               # auth, errores, requestContext, idempotency, rateLimit
 │   ├── telegram/
-│   │   ├── bot.js
-│   │   └── notifications.js
+│   │   ├── bot.js                # grammY + lógica de mensajes testeable
+│   │   ├── history.js            # buffer de 20 mensajes por chat
+│   │   ├── rateLimiter.js
+│   │   └── notifications.js      # entrega de la outbox
 │   └── ai/
+│       ├── apiClient.js          # HTTP a la API con X-Api-Key y timeout
 │       ├── orchestrator.js
 │       ├── tools.js
 │       └── prompt.js
 └── tests/
+    ├── helpers/                  # app con base en memoria, reloj fijo, IA falsa
     ├── unit/
     ├── integration/
     └── e2e/
@@ -355,6 +364,8 @@ CREATE INDEX idx_notifications_pending ON notifications (delivered_at, id);
 - `period_closures`: resumen inmutable. `UNIQUE (user_id, period)` es la garantía de idempotencia del cierre.
 - `savings` + `savings_movements`: una sola cuenta de ahorro por usuario; el historial explica cada abono.
 - `notifications`: outbox confiable. `text` ya viene redactado en español.
+- `idempotency_keys` (migración `002_idempotency.sql`): respuestas guardadas del header `Idempotency-Key` durante 24 h. Clave primaria `(user_id, key)`.
+- `users`: el producto es de un solo usuario. El **dueño** es la primera fila; se crea sola en el primer request con el primer ID de `ALLOWED_TELEGRAM_USER_IDS` (o `0` si no hay).
 
 ---
 
@@ -363,7 +374,7 @@ CREATE INDEX idx_notifications_pending ON notifications (delivered_at, id);
 | ID | Regla |
 |---|---|
 | RN-01 | Salario: monto > 0 y día de pago 1–31 (por defecto 1). Si el día no existe en el mes, se usa el último día (31 → 30/28/29). |
-| RN-02 | Cambiar el salario inserta historial con `effective_from` (hoy por defecto). No reescribe cierres anteriores. |
+| RN-02 | Cambiar el salario inserta historial con `effective_from` (hoy por defecto). No reescribe cierres anteriores. Si no se envía `pay_day`, se conserva el del salario vigente (1 si no había). |
 | RN-03 | Ingresos extras: descripción, monto > 0 y fecha. Fecha por defecto: hoy. |
 | RN-04 | Gastos fijos: plantilla (nombre, monto, día de pago) + una instancia por mes. La instancia nace pendiente. |
 | RN-05 | Editar una plantilla actualiza la instancia del periodo activo solo si está pendiente; las pagadas conservan su snapshot. Borrar una plantilla elimina sus instancias pendientes y conserva las pagadas con el nombre/monto históricos. |
@@ -376,9 +387,9 @@ CREATE INDEX idx_notifications_pending ON notifications (delivered_at, id);
 | RN-12 | Cierre del periodo `M`: se ejecuta cuando llega la fecha de pago del salario de `M+1` (calculada con el salario vigente). Es idempotente y se ejecuta en una sola transacción. |
 | RN-13 | El cierre guarda: salario, ingresos extras, gastos fijos pagados, gastos extras, desglose por categoría (incluye `sin_categoria`), categoría mayor y menor, saldo y ahorro. |
 | RN-14 | Ahorro: `saved_cents = max(saldo, 0)` y se suma al ahorro general. Si el saldo es negativo, `deficit_cents = −saldo` y el ahorro no se toca. |
-| RN-15 | Categoría mayor/menor: orden por total descendente y nombre ascendente como desempate. Con una sola categoría, `bottom_category = NULL`. Sin gastos, ambas `NULL`. |
+| RN-15 | Categoría mayor/menor: orden por total descendente y nombre ascendente como desempate. `sin_categoria` participa como una categoría más. Con una sola categoría, `bottom_category = NULL`. Sin gastos, ambas `NULL`. |
 | RN-16 | Tras cerrar `M` se crea el periodo `M+1` (si no existe), se generan sus facturas pendientes y se toma el límite vigente. |
-| RN-17 | Los periodos cerrados son de solo lectura: no se crean, editan ni eliminan movimientos con fecha en ellos (409 `PERIOD_CLOSED`). |
+| RN-17 | Los periodos cerrados son de solo lectura: no se crean, editan ni eliminan movimientos con fecha en ellos (409 `PERIOD_CLOSED`). Un mes anterior sin fila en `periods` cuenta como cerrado si su disparador ya pasó; si no, se crea sin facturas. Los meses futuros se rechazan (400). Una plantilla nueva solo genera factura en el periodo activo. |
 | RN-18 | Fechas y horas de negocio en `America/Bogota`. Un gasto de las 23:30 del 30 de noviembre pertenece a noviembre. |
 | RN-19 | Dinero: enteros en centavos, máximo `1_000_000_000_000` centavos ($10.000 millones). Formato de presentación `es-CO`, sin decimales. |
 | RN-20 | Toda escritura monetaria es transaccional y valida el periodo antes de insertar. |
@@ -484,13 +495,17 @@ Envelope:
 { "ok": false, "error": { "code": "VALIDATION_ERROR", "message": "El monto debe ser mayor que cero.", "details": [] } }
 ```
 
-Códigos: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `NOT_FOUND` (404), `PERIOD_CLOSED` (409), `ALREADY_PAID` (409), `CONFLICT` (409), `INTERNAL_ERROR` (500).
+Códigos: `VALIDATION_ERROR` (400, también 413 por cuerpo > 100 kB), `UNAUTHORIZED` (401), `NOT_FOUND` (404), `PERIOD_CLOSED` (409), `ALREADY_PAID` (409), `CONFLICT` (409), `RATE_LIMITED` (429, más de 300 peticiones/minuto), `INTERNAL_ERROR` (500). El cliente de la IA agrega `BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE` y `BACKEND_ERROR` cuando no hay respuesta válida del backend.
+
+**Idempotencia:** las escrituras (`POST`, `PUT`, `PATCH`, `DELETE`) aceptan el header opcional `Idempotency-Key` (8–100 caracteres `[A-Za-z0-9._:-]`). Repetir la misma petición con la misma clave devuelve la respuesta guardada con el header `Idempotent-Replay: true`; usar la clave con otra petición responde 409 `CONFLICT`. Las claves duran 24 h.
+
+**Antes de cada request** `/api/*` se resuelve el usuario dueño, se procesan los cierres vencidos y se asegura el periodo activo.
 
 ### 9.1 Sistema
 
 | Método y URL completa | Descripción |
 |---|---|
-| `GET http://127.0.0.1:3000/health` | Estado del proceso. Sin auth. La comprobación de la base se agrega en la Fase 2; hoy responde `database: "not_configured"`. |
+| `GET http://127.0.0.1:3000/health` | Estado del proceso. Sin auth. Ejecuta `SELECT 1`: `database: "ok"` (200) o `"error"` (503). |
 | `GET http://127.0.0.1:3000/api/context` | Contexto para la IA: hoy, periodo activo, salario vigente y próxima fecha de pago, límite y acumulado, saldo, ahorro, facturas pendientes/vencidas y último cierre. |
 | `GET http://127.0.0.1:3000/api/notifications/pending` | Notificaciones sin entregar (máx. 50). |
 | `POST http://127.0.0.1:3000/api/notifications/{id}/ack` | Marca una notificación como entregada. |
@@ -500,7 +515,7 @@ Códigos: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `NOT_FOUND` (404), `PE
 | Método y URL completa | Descripción |
 |---|---|
 | `GET http://127.0.0.1:3000/api/salary` | Salario vigente: monto, día de pago y próxima fecha. |
-| `PUT http://127.0.0.1:3000/api/salary` | Crea o actualiza el salario. Body: `{ "amount_cents": 350000000 }` o `{ "amount": "3.500.000", "pay_day": 10 }`; `pay_day` por defecto 1. Inserta historial. |
+| `PUT http://127.0.0.1:3000/api/salary` | Crea o actualiza el salario. Body: `{ "amount_cents": 350000000 }` o `{ "amount": "3.500.000", "pay_day": 10, "effective_from": "2026-11-24" }`; `pay_day` por defecto el vigente (1 si no hay); `effective_from` por defecto hoy. Inserta historial. |
 | `GET http://127.0.0.1:3000/api/salary/history` | Historial de cambios. |
 
 ### 9.3 Ingresos extras
@@ -527,8 +542,8 @@ Códigos: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `NOT_FOUND` (404), `PE
 
 | Método y URL completa | Descripción |
 |---|---|
-| `GET http://127.0.0.1:3000/api/expenses?period=&category=&from=&to=&sort=date\|amount&order=desc&limit=&offset=` | Listado flexible. `sort=amount&order=desc` cumple “de mayor a menor monto”. |
-| `POST http://127.0.0.1:3000/api/expenses` | Body: `{ "name": "Cena", "amount_cents": 4500000, "category": "comida", "date": "2026-11-24" }`. Categoría y fecha opcionales. |
+| `GET http://127.0.0.1:3000/api/expenses?period=&category=&from=&to=&sort=date\|amount&order=desc&limit=&offset=` | Listado flexible. `sort=amount&order=desc` cumple “de mayor a menor monto”. `category=sin_categoria` filtra los gastos sin categoría. Si se envía `from`/`to` sin `period`, no se aplica el periodo por defecto. |
+| `POST http://127.0.0.1:3000/api/expenses` | Body: `{ "name": "Cena", "amount_cents": 4500000, "category": "comida", "date": "2026-11-24" }`. Categoría y fecha opcionales. La respuesta incluye `alerts` (avisos encolados en esta operación) y `limit` (estado del límite). |
 | `PATCH http://127.0.0.1:3000/api/expenses/{id}` | Edita campos enviados; recalcula avisos si cambia el monto. |
 | `DELETE http://127.0.0.1:3000/api/expenses/{id}` | Elimina; recalcula avisos. |
 | `GET http://127.0.0.1:3000/api/expenses/recent?limit=10` | Últimos gastos registrados (fecha y creación descendente). |
@@ -558,13 +573,16 @@ Ejemplo de respuesta (`GET http://127.0.0.1:3000/api/balance`):
     "salary_cents": 350000000,
     "extra_income_cents": 50000000,
     "fixed_paid_cents": 110000000,
+    "fixed_pending_cents": 0,
     "extra_expense_cents": 45000000,
     "balance_cents": 245000000,
+    "salary_configured": true,
     "currency": "COP",
     "formatted": {
       "salary": "$3.500.000",
       "extra_income": "$500.000",
       "fixed_paid": "$1.100.000",
+      "fixed_pending": "$0",
       "extra_expenses": "$450.000",
       "balance": "$2.450.000"
     }
@@ -587,7 +605,7 @@ Ejemplo de respuesta (`GET http://127.0.0.1:3000/api/balance`):
 | `GET http://127.0.0.1:3000/api/closures?limit=12` | Lista de cierres, recientes primero. |
 | `GET http://127.0.0.1:3000/api/closures/latest` | Último cierre con desglose por categoría. |
 | `GET http://127.0.0.1:3000/api/closures/{period}` | Cierre de un periodo (`2026-11`). |
-| `POST http://127.0.0.1:3000/api/closures/run` | Fuerza la verificación de cierres vencidos. Body opcional: `{ "dry_run": true }`. Uso administrativo y de pruebas. |
+| `POST http://127.0.0.1:3000/api/closures/run` | Fuerza la verificación de cierres vencidos. Body opcional: `{ "dry_run": true }` (devuelve los totales que se cerrarían sin escribir). Uso administrativo y de pruebas. |
 
 ---
 
@@ -624,9 +642,9 @@ Los nombres y argumentos van en español para reducir ambigüedad con el usuario
 | `consultar_facturas` | `estado` (`pendientes`\|`pagadas`\|`todas`), `periodo?` | `GET /api/fixed-expenses/instances` |
 | `pagar_factura` | `factura_id` | `POST /api/fixed-expenses/instances/{id}/pay` |
 | `registrar_gasto_extra` | `nombre`, `monto`, `categoria?`, `fecha?` | `POST /api/expenses` |
-| `editar_gasto_extra` | `id`, `nombre?`, `monto?`, `categoria?`, `fecha?` | `PATCH /api/expenses/{id}` |
+| `editar_gasto_extra` | `id`, `nombre?`, `monto?`, `categoria?` (`sin_categoria` la quita), `fecha?` | `PATCH /api/expenses/{id}` |
 | `eliminar_gasto_extra` | `id` | `DELETE /api/expenses/{id}` |
-| `consultar_gastos` | `vista` (`recientes`\|`por_dias`\|`por_categoria`\|`por_monto`), `dias?`, `periodo?`, `limite?` | `GET /api/expenses`, `/recent`, `/by-day`, `/by-category` |
+| `consultar_gastos` | `vista` (`recientes`\|`por_dias`\|`por_categoria`\|`por_monto`), `dias?`, `periodo?`, `categoria?` (solo `por_monto`), `limite?` | `GET /api/expenses`, `/recent`, `/by-day`, `/by-category` |
 | `definir_limite_mensual` | `monto` | `PUT /api/limits/monthly` |
 | `consultar_limite` | — | `GET /api/limits/current` |
 | `consultar_ahorro` | — | `GET /api/savings` |
@@ -663,20 +681,22 @@ Variables de entorno (`.env`, ver `.env.example`):
 | `ALLOWED_TELEGRAM_USER_IDS` | — | IDs separados por coma. |
 | `AI_BASE_URL` | `https://api.openai.com/v1` | Endpoint compatible. |
 | `AI_API_KEY` | — | Clave del proveedor. |
-| `AI_MODEL` | — (obligatoria) | ID real del modelo a usar. |
+| `AI_MODEL` | — (obligatoria para el bot) | ID real del modelo a usar. |
 | `LOG_LEVEL` | `info` | Nivel de pino. |
 
-Comandos previstos (los de datos se habilitan en su fase):
+El bot arranca solo si están `TELEGRAM_BOT_TOKEN`, `ALLOWED_TELEGRAM_USER_IDS` y `AI_MODEL`; si falta alguna, el proceso corre solo la API y lo avisa en el log. `AI_API_KEY` es opcional para proveedores locales sin clave.
+
+Comandos:
 
 ```bash
 npm install
-npm run migrate          # aplica migraciones pendientes (Fase 2)
-npm run seed             # datos de ejemplo (Fase 2)
+npm run migrate          # aplica migraciones pendientes
+npm run seed             # datos de ejemplo (no corre en producción sin --force)
 npm run dev              # node --watch, API + bot
 npm start                # producción
 npm test                 # unit + integration + e2e
-npm run closure:run      # cierre manual e idempotente (Fase 8)
-npm run backup           # copia consistente de SQLite (Fase 11)
+npm run closure:run      # cierre manual e idempotente (-- --dry-run para simular)
+npm run backup           # VACUUM INTO en data/backups, retención 30 días (-- <dir> para otro destino)
 ```
 
 ---
@@ -711,12 +731,12 @@ npm run backup           # copia consistente de SQLite (Fase 11)
 
 - Lista blanca de `telegram_user_id`; cualquier otro usuario se rechaza y se registra.
 - API interna con `X-Api-Key` y escucha en `127.0.0.1`; no se publica.
-- Rate limit por usuario de Telegram (p. ej. 20 mensajes/minuto) y longitud máxima de mensaje.
+- Rate limit por usuario de Telegram (20 mensajes/minuto), longitud máxima de mensaje (1000 caracteres), 300 peticiones/minuto en la API y cuerpos de máximo 100 kB.
 - SQL siempre parametrizado; sin concatenación de valores.
 - Secretos solo en `.env`; `.env` en `.gitignore`.
 - Confirmación explícita antes de pagos, borrados y cambios de salario/límite.
 - Los logs no incluyen tokens ni el contenido completo de mensajes; sí `request_id`, herramienta y duración.
-- La base contiene datos financieros: permisos `600`, backups cifrados o en disco local del usuario.
+- La base contiene datos financieros: el archivo se deja en `600` y el directorio de datos en `700` (también los backups); backups en disco local del usuario.
 
 ---
 
@@ -726,7 +746,9 @@ npm run backup           # copia consistente de SQLite (Fase 11)
 - Backup diario con `sqlite3 .backup` o `VACUUM INTO`, conservando 30 días.
 - Job diario 00:05 America/Bogota; además, verificación de cierres al inicio de cada request.
 - Healthcheck `GET /health` con verificación `SELECT 1`.
-- Despliegue con systemd (`Restart=always`, `EnvironmentFile=.env`) o contenedor con volumen para `data/`.
+- Despliegue con systemd (`Restart=always`, `EnvironmentFile=.env`): ver `deploy/finanzas-bot.service` y el timer de backup `deploy/finanzas-backup.timer`.
+- Errores 500: se registran y se avisa al dueño por Telegram (máximo uno cada 10 minutos).
+- Restaurar un backup: detener el servicio, copiar `data/backups/finanzas-<fecha>.db` sobre `DB_PATH` (borrando los `-wal`/`-shm` viejos) y arrancar; las migraciones pendientes se aplican solas.
 - Logs JSON a stdout; rotación por journald.
 - Al arrancar: migraciones pendientes + `ensureClosures()` antes de aceptar mensajes.
 
