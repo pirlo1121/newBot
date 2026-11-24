@@ -3,9 +3,9 @@
 Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto debe leer primero [`AGENTS.md`](../AGENTS.md) y después este archivo.
 
 - **Última actualización:** 2026-11-24
-- **Fase actual:** 0 completada
-- **Siguiente paso:** Fase 1 — esqueleto del backend
-- **Código existente:** ninguno todavía (solo documentación)
+- **Fase actual:** 1 completada
+- **Siguiente paso:** Fase 2 — base de datos y migraciones
+- **Código existente:** API Express con `/health`, autenticación `X-Api-Key`, configuración validada y 13 tests
 
 ---
 
@@ -16,10 +16,10 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 | Documentación maestra | ✅ `AGENTS.md` |
 | Plan y bitácora | ✅ este archivo |
 | Repositorio git | ✅ inicializado, rama `main` |
-| Código | ⬜ no iniciado |
-| Migraciones | ⬜ |
-| API | ⬜ |
-| Bot de Telegram | ⬜ |
+| Código | ✅ Fase 1: esqueleto del backend |
+| Migraciones | ⬜ Fase 2 |
+| API | 🟡 `/health` y autenticación; endpoints de negocio pendientes |
+| Bot de Telegram | ⬜ Fase 10 |
 | Decisiones abiertas | ⬜ 6 puntos en `AGENTS.md` §17 |
 
 ---
@@ -65,18 +65,22 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 
 ---
 
-### Fase 1 — Esqueleto del backend
+### Fase 1 — Esqueleto del backend ✅ (2026-11-24)
 
-- [ ] `package.json` con ESM, `engines.node >= 24` y scripts: `dev`, `start`, `test`, `migrate`, `seed`, `closure:run`, `backup`.
-- [ ] Dependencias: `express@5`, `zod`, `dayjs`, `dotenv`, `pino`, `pino-http`; desarrollo: `supertest`.
-- [ ] `.gitignore` (node_modules, .env, data, coverage) y `.env.example` con todas las variables de `AGENTS.md` §11.
-- [ ] `src/config.js`: validación de entorno con zod y error claro si falta algo obligatorio.
-- [ ] `src/app.js`: Express con `request_id`, JSON, `GET /health`, 404 y manejador de errores central.
-- [ ] `src/server.js`: `listen` en `HOST`/`PORT` y apagado ordenado (sin bot todavía).
-- [ ] `tests/health.test.js` con supertest.
-- [ ] `README.md` mínimo: instalar, configurar `.env`, correr.
+- [x] `package.json` con ESM, `engines.node >= 24` y scripts base: `dev`, `start`, `test`, `test:watch`. Los scripts de datos (`migrate`, `seed`, `closure:run`, `backup`) se agregan en su fase.
+- [x] Dependencias: `express@5`, `zod`, `dayjs`, `dotenv`, `pino`, `pino-http`; desarrollo: `supertest`.
+- [x] `.gitignore` (node_modules, .env, data, coverage) y `.env.example` con todas las variables de `AGENTS.md` §11.
+- [x] `.env` local generado con una API key aleatoria; no se versiona.
+- [x] `src/config.js`: validación con zod, defaults, parseo de IDs de Telegram y error claro si falta `INTERNAL_API_KEY`.
+- [x] `src/app.js`: Express con `request_id`, logs pino, JSON, `GET /health`, 404 y manejador de errores central.
+- [x] `src/middleware/auth.js`: `X-Api-Key` con comparación de tiempo constante para `/api`.
+- [x] `src/middleware/errorHandler.js`: envelope de errores y 400 para JSON inválido.
+- [x] `src/server.js`: `listen` en `HOST`/`PORT` y apagado ordenado por `SIGINT`/`SIGTERM`.
+- [x] Logs sin `x-api-key`, `authorization` ni `cookie` (probado).
+- [x] `tests/unit/config.test.js` y `tests/integration/health.test.js` (13 tests).
+- [x] `README.md` mínimo: instalar, configurar `.env`, correr y probar.
 
-**Criterio de aceptación:** `npm run dev` levanta el servidor; `GET http://127.0.0.1:3000/health` responde 200 con estado de la base (aún sin conectar); `npm test` pasa; sin `INTERNAL_API_KEY` el arranque falla con un mensaje entendible.
+**Criterio de aceptación:** `npm run dev` levanta el servidor; `GET http://127.0.0.1:3000/health` responde 200; `/api` sin key responde 401 y con key responde 404; `npm test` pasa; sin `INTERNAL_API_KEY` el arranque falla con un mensaje entendible.
 
 ---
 
@@ -224,6 +228,7 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 | # | Fecha | Sesión | Cambios | Siguiente |
 |---|---|---|---|---|
 | 001 | 2026-11-24 | Inicial | `AGENTS.md` con arquitectura, modelo de datos, reglas y API; `docs/PROGRESO.md` con fases; repositorio git inicializado. | Fase 1 — esqueleto del backend |
+| 002 | 2026-11-24 | Fase 1 | `.env` y `.env.example`; config validada con zod; Express con `/health`, request id, logs pino sin credenciales; auth `X-Api-Key`; manejo de errores; 13 tests; README. | Fase 2 — base de datos y migraciones |
 
 > Al cerrar una sesión, agregar una fila con lo hecho, lo que quedó a medias y el siguiente paso exacto.
 
@@ -242,17 +247,19 @@ Están detalladas en `AGENTS.md` §17. Resumen:
 
 ---
 
-## Comandos previstos
+## Comandos
+
+Disponibles hoy:
 
 ```bash
 npm install
-npm run migrate
-npm run seed
 npm run dev
+npm start
 npm test
-npm run closure:run
-npm run backup
+npm run test:watch
 ```
+
+Se agregan en sus fases: `npm run migrate` (Fase 2), `npm run seed` (Fase 2), `npm run closure:run` (Fase 8) y `npm run backup` (Fase 11).
 
 ---
 

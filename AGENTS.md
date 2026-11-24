@@ -3,7 +3,7 @@
 Documento maestro de la aplicación. Es la fuente de verdad para cualquier persona o agente que trabaje en el repositorio. El plan de implementación y la bitácora de sesiones están en [`docs/PROGRESO.md`](docs/PROGRESO.md).
 
 - **Última actualización:** 2026-11-24
-- **Estado:** Fase 0 completada (documentación y decisiones). Siguiente: Fase 1 (esqueleto del backend).
+- **Estado:** Fase 1 completada (esqueleto del backend). Siguiente: Fase 2 (base de datos y migraciones).
 - **Idioma del producto:** español (Colombia), moneda COP.
 
 ---
@@ -490,7 +490,7 @@ Códigos: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `NOT_FOUND` (404), `PE
 
 | Método y URL completa | Descripción |
 |---|---|
-| `GET http://127.0.0.1:3000/health` | Estado del proceso y de la base. Sin auth. |
+| `GET http://127.0.0.1:3000/health` | Estado del proceso. Sin auth. La comprobación de la base se agrega en la Fase 2; hoy responde `database: "not_configured"`. |
 | `GET http://127.0.0.1:3000/api/context` | Contexto para la IA: hoy, periodo activo, salario vigente y próxima fecha de pago, límite y acumulado, saldo, ahorro, facturas pendientes/vencidas y último cierre. |
 | `GET http://127.0.0.1:3000/api/notifications/pending` | Notificaciones sin entregar (máx. 50). |
 | `POST http://127.0.0.1:3000/api/notifications/{id}/ack` | Marca una notificación como entregada. |
@@ -653,6 +653,7 @@ Variables de entorno (`.env`, ver `.env.example`):
 
 | Variable | Default | Uso |
 |---|---|---|
+| `NODE_ENV` | `development` | `development`, `test` o `production`. |
 | `PORT` | `3000` | Puerto de la API. |
 | `HOST` | `127.0.0.1` | Interfaz de escucha. No exponer públicamente. |
 | `DB_PATH` | `./data/finanzas.db` | Archivo SQLite. |
@@ -665,17 +666,17 @@ Variables de entorno (`.env`, ver `.env.example`):
 | `AI_MODEL` | — (obligatoria) | ID real del modelo a usar. |
 | `LOG_LEVEL` | `info` | Nivel de pino. |
 
-Comandos previstos:
+Comandos previstos (los de datos se habilitan en su fase):
 
 ```bash
 npm install
-npm run migrate          # aplica migraciones pendientes
-npm run seed             # datos de ejemplo (desarrollo)
+npm run migrate          # aplica migraciones pendientes (Fase 2)
+npm run seed             # datos de ejemplo (Fase 2)
 npm run dev              # node --watch, API + bot
 npm start                # producción
 npm test                 # unit + integration + e2e
-npm run closure:run      # cierre manual (idempotente)
-npm run backup           # copia consistente de SQLite
+npm run closure:run      # cierre manual e idempotente (Fase 8)
+npm run backup           # copia consistente de SQLite (Fase 11)
 ```
 
 ---
