@@ -615,6 +615,8 @@ Ejemplo de respuesta (`GET http://127.0.0.1:3000/api/balance`):
 
 El usuario mencionó “ChatGPT Luna 6”, que no es un identificador de API verificable. Por eso el modelo es una variable de entorno (`AI_MODEL`) y el cliente habla el formato de *chat completions* compatible con OpenAI (`AI_BASE_URL`, `AI_API_KEY`). Al desplegar se fija el ID real del proveedor; el código no asume ninguno.
 
+**Decisión vigente (2026-11-24):** el modelo previsto sigue siendo “GPT Luna 6”, pero mientras se confirma su ID de API se usa **DeepSeek** (`AI_BASE_URL=https://api.deepseek.com/v1`, `AI_MODEL=deepseek-chat`), que es compatible con *chat completions* y *tools*. Cambiar de proveedor solo requiere editar esas variables y `AI_API_KEY` en `.env`.
+
 ### 10.2 Bucle de herramientas
 
 - Máximo 6 rondas de `tool_calls` por mensaje; luego se responde con un mensaje de disculpa y se registra el caso.
@@ -775,7 +777,7 @@ npm run backup           # VACUUM INTO en data/backups, retención 30 días (-- 
 
 ## 17. Decisiones abiertas (confirmar con el usuario)
 
-1. **Modelo real:** “ChatGPT Luna 6” no es un ID de API estándar. Falta definir proveedor y `AI_MODEL` al desplegar.
+1. **Modelo real:** se usará “GPT Luna 6” cuando se confirme su ID de API. Mientras tanto: DeepSeek (`deepseek-chat`), ver §10.1.
 2. **Edición tras el cierre:** se bloquea por defecto (D-05). ¿Se quiere un mecanismo de corrección con recálculo del cierre y del ahorro?
 3. **Saldo devengado vs. disponible:** hoy se incluye el salario completo del mes aunque el pago llegue el día 10. ¿Se quiere además un “disponible hasta el próximo pago”?
 4. **Déficit:** hoy no se descuenta del ahorro. ¿Debe descontarse?

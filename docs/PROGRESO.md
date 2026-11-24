@@ -235,6 +235,8 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 
 | 003 | 2026-11-24 | Fases 2–11 | A pedido del usuario se completaron todas las fases en una sesión. Base SQLite (WAL, migraciones, transacciones anidadas con savepoints); dominio puro (dinero, fechas, cierre); API completa; avisos de límite por outbox; cierres idempotentes con `ensureClosures` por request y job 00:05; herramientas de IA (19) con cliente HTTP; orquestador con máx. 6 rondas; bot grammY con lista blanca, rate limit, historial y entrega de notificaciones; `Idempotency-Key`; rate limit de API; aviso de 500 al dueño; backup `VACUUM INTO` con retención; systemd de ejemplo. Decisiones tomadas sin cambiar reglas: usuario único "dueño"; `pay_day` omitido conserva el vigente; `sin_categoria` participa en mayor/menor; meses viejos sin fila cuentan como cerrados; herramienta `consultar_gastos` admite `categoria`. 82 tests. | Prueba manual con Telegram y modelo real; confirmar §17; Fase 12 opcional |
 
+| 004 | 2026-11-24 | Proveedor de IA | El usuario decide usar DeepSeek (`https://api.deepseek.com/v1`, `deepseek-chat`) por el momento; “GPT Luna 6” queda registrado como modelo previsto. `.env` configurado (la clave la pone el usuario); `.env.example`, `AGENTS.md` §10.1/§17 actualizados. | Poner `AI_API_KEY`, `TELEGRAM_BOT_TOKEN` y `ALLOWED_TELEGRAM_USER_IDS` y hacer la prueba manual |
+
 > Al cerrar una sesión, agregar una fila con lo hecho, lo que quedó a medias y el siguiente paso exacto.
 
 ---
@@ -243,7 +245,7 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 
 Están detalladas en `AGENTS.md` §17. Resumen:
 
-1. Proveedor y ID real del modelo (“ChatGPT Luna 6” no es un ID de API estándar).
+1. Modelo: previsto “GPT Luna 6” (ID de API pendiente); por ahora DeepSeek `deepseek-chat`.
 2. Corrección de periodos cerrados (hoy bloqueada).
 3. Saldo devengado vs. saldo disponible antes del día de pago.
 4. Si el déficit debe descontarse del ahorro.
