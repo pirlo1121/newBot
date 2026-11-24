@@ -5,7 +5,7 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 - **Última actualización:** 2026-11-24
 - **Fase actual:** 0–11 completadas (v1)
 - **Siguiente paso:** prueba manual con token real de Telegram y proveedor de IA; confirmar las decisiones abiertas. Fase 12 opcional.
-- **Código existente:** API completa, cierres, outbox, herramientas de IA, orquestador, bot de Telegram, scheduler, backups y 82 tests
+- **Código existente:** API completa, cierres, outbox, herramientas de IA, orquestador con verificación de respuestas, bot de Telegram, scheduler, backups y 92 tests
 
 ---
 
@@ -47,7 +47,7 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 
 ### Criterios globales de terminado
 
-- [x] Tests unitarios, integración y e2e verdes (`npm test`, 82 tests).
+- [x] Tests unitarios, integración y e2e verdes (`npm test`, 92 tests).
 - [x] Documentación actualizada (reglas, endpoints, herramientas).
 - [x] Sin `console.log` de depuración ni secretos (los scripts de CLI usan `console` para su salida).
 - [x] Commit hecho y bitácora actualizada.
@@ -236,6 +236,8 @@ Bitácora de trabajo y ruta paso a paso. Cualquier agente que retome el proyecto
 | 003 | 2026-11-24 | Fases 2–11 | A pedido del usuario se completaron todas las fases en una sesión. Base SQLite (WAL, migraciones, transacciones anidadas con savepoints); dominio puro (dinero, fechas, cierre); API completa; avisos de límite por outbox; cierres idempotentes con `ensureClosures` por request y job 00:05; herramientas de IA (19) con cliente HTTP; orquestador con máx. 6 rondas; bot grammY con lista blanca, rate limit, historial y entrega de notificaciones; `Idempotency-Key`; rate limit de API; aviso de 500 al dueño; backup `VACUUM INTO` con retención; systemd de ejemplo. Decisiones tomadas sin cambiar reglas: usuario único "dueño"; `pay_day` omitido conserva el vigente; `sin_categoria` participa en mayor/menor; meses viejos sin fila cuentan como cerrados; herramienta `consultar_gastos` admite `categoria`. 82 tests. | Prueba manual con Telegram y modelo real; confirmar §17; Fase 12 opcional |
 
 | 004 | 2026-11-24 | Proveedor de IA | El usuario decide usar DeepSeek (`https://api.deepseek.com/v1`, `deepseek-chat`) por el momento; “GPT Luna 6” queda registrado como modelo previsto. `.env` configurado (la clave la pone el usuario); `.env.example`, `AGENTS.md` §10.1/§17 actualizados. | Poner `AI_API_KEY`, `TELEGRAM_BOT_TOKEN` y `ALLOWED_TELEGRAM_USER_IDS` y hacer la prueba manual |
+
+| 005 | 2026-11-24 | Incidente: IA afirmaba cambios no guardados | En la primera prueba real con DeepSeek el bot dijo haber definido el límite de $450.000, pagado grok/claude/paramount y registrado uber/hamburguesa/valentina, pero no llamó al backend (la base no tenía nada de eso). Causas: el historial guardaba solo texto (el modelo imitaba "listo" sin llamadas), el orquestador no verificaba la respuesta y el prompt no era tajante. Arreglo: historial por turnos completos con herramientas; verificación de la respuesta final (`src/ai/guard.js`) con hasta 2 correcciones y texto seguro si insiste; reglas de ejecución A–E en el prompt; `consultar_gastos` admite `orden`, `desde` y `hasta`; temperatura 0.2. 92 tests (incluye réplica del incidente con IA falsa). Réplica de la conversación completa con DeepSeek real: todas las afirmaciones coinciden con la base. | El usuario corrige los datos de su base real y reinicia el bot |
 
 > Al cerrar una sesión, agregar una fila con lo hecho, lo que quedó a medias y el siguiente paso exacto.
 

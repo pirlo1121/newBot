@@ -64,9 +64,17 @@ export function createMessageHandler({
     const started = Date.now();
     try {
       const result = await orchestrator.reply({ history: history.get(chatId), text });
-      history.add(chatId, { role: 'user', content: text }, { role: 'assistant', content: result.text });
+      history.addTurn(
+        chatId,
+        result.messages ?? [{ role: 'user', content: text }, { role: 'assistant', content: result.text }]
+      );
       logger?.info(
-        { chat_id: chatId, tools: result.toolCalls.map((c) => c.name), duration_ms: Date.now() - started },
+        {
+          chat_id: chatId,
+          tools: result.toolCalls.map((c) => (c.ok ? c.name : `${c.name}:error`)),
+          corrections: result.corrections ?? [],
+          duration_ms: Date.now() - started
+        },
         'mensaje atendido'
       );
       return result.text;

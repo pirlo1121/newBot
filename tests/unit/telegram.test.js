@@ -25,7 +25,7 @@ test('ignora usuarios fuera de la lista blanca', async () => {
   assert.equal(orchestrator.seen.length, 0);
 });
 
-test('mantiene historial corto por chat', async () => {
+test('mantiene historial corto por chat, por turnos', async () => {
   const orchestrator = fakeOrchestrator();
   const history = createHistory(4);
   const handle = createMessageHandler({ orchestrator, allowedUserIds: [111], history });
@@ -33,6 +33,25 @@ test('mantiene historial corto por chat', async () => {
   assert.deepEqual(orchestrator.seen[2].history.map((m) => m.content), ['uno', 'eco: uno', 'dos', 'eco: dos']);
   assert.equal(history.get(1).length, 4);
   assert.equal(history.get(2).length, 0);
+});
+
+test('el historial conserva llamadas y resultados de herramientas sin dejar huérfanos', () => {
+  const history = createHistory(4); // 2 turnos
+  const turn = (n) => [
+    { role: 'user', content: `gasto ${n}` },
+    { role: 'assistant', content: null, tool_calls: [{ id: `c${n}`, type: 'function', function: { name: 'registrar_gasto_extra', arguments: '{}' } }], reasoning_content: 'pienso' },
+    { role: 'tool', tool_call_id: `c${n}`, content: 'x'.repeat(5000) },
+    { role: 'assistant', content: `Registré el gasto ${n}.` }
+  ];
+  for (const n of [1, 2, 3]) history.addTurn(1, turn(n));
+  const messages = history.get(1);
+  assert.equal(messages.length, 8);
+  assert.equal(messages[0].content, 'gasto 2');
+  assert.equal(messages[1].tool_calls[0].id, 'c2');
+  assert.equal('reasoning_content' in messages[1], false);
+  assert.equal(messages[2].role, 'tool');
+  assert.ok(messages[2].content.length < 3100);
+  assert.match(messages[2].content, /recortado/);
 });
 
 test('límite de tasa y longitud máxima', async () => {

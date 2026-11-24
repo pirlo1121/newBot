@@ -102,11 +102,11 @@ En v1, backend, bot y scheduler corren en el mismo proceso de Node (`src/server.
 ## 4. Flujo de una conversación
 
 1. Llega un update de Telegram. Si el `telegram_user_id` no está en `ALLOWED_TELEGRAM_USER_IDS`, se ignora y se registra el intento.
-2. El bot arma el contexto: fecha/hora actual en `America/Bogota`, últimos turnos del chat (buffer en memoria, 20 mensajes) y pregunta del usuario.
+2. El bot arma el contexto: fecha/hora actual en `America/Bogota`, últimos turnos del chat (buffer en memoria de 10 turnos completos: mensaje, llamadas a herramientas, resultados y respuesta) y pregunta del usuario.
 3. El orquestador llama al modelo con el prompt de sistema y el catálogo de herramientas.
 4. El modelo responde con uno o varios `tool_calls`. El orquestador valida argumentos con zod y ejecuta el endpoint correspondiente con `X-Api-Key`.
 5. El backend valida, aplica reglas de negocio, escribe en SQLite en una transacción y devuelve JSON con totales ya formateados.
-6. El resultado vuelve al modelo, que puede pedir más herramientas (máximo 6 rondas). Al terminar, redacta la respuesta final en español.
+6. El resultado vuelve al modelo, que puede pedir más herramientas (máximo 6 rondas). Al terminar, redacta la respuesta final en español, que el orquestador **verifica** contra las herramientas ejecutadas en el turno (§10.2).
 7. El bot envía la respuesta y, después, las notificaciones pendientes de la outbox (límite alcanzado, cierre mensual). Esas notificaciones las redacta el backend, no el modelo, para garantizar su entrega.
 
 Ejemplo:
@@ -625,6 +625,13 @@ El usuario mencionó “ChatGPT Luna 6”, que no es un identificador de API ver
 - Los resultados se recortan a 20 elementos por lista (el modelo no necesita más para redactar).
 - Si el backend devuelve error, el modelo lo recibe como `{ ok: false, error: {...} }` y debe explicarlo sin inventar éxito.
 - Toda respuesta incluye `meta.today` y `meta.period`; el modelo usa esa fecha para resolver “hoy”, “ayer” y “esta semana”, nunca su reloj interno.
+- **Historial por turnos completos.** Se guardan el mensaje del usuario, las llamadas a herramientas, sus resultados (recortados a 3000 caracteres) y la respuesta; se descartan los `reasoning_content`. Se recorta por turnos enteros (10) para no dejar resultados sin su llamada. Guardar solo el texto hacía que el modelo imitara respuestas de “listo” sin llamadas.
+- **Verificación de la respuesta final** (`src/ai/guard.js`), por el incidente del 2026-11-24 en el que el modelo afirmó haber guardado un límite, tres pagos y tres gastos que nunca llegaron al backend:
+  - Si la respuesta afirma un cambio (“registré”, “pagué”, “quedó configurado”, “definido en $…”) y en el turno ninguna herramienta de escritura devolvió `ok: true`, se devuelve al modelo con una corrección del sistema para que llame la herramienta o pregunte.
+  - Si responde con cifras sin haber consultado nada en el turno y sin preguntar, se le pide consultar el backend.
+  - Máximo 2 correcciones por turno. Si insiste en afirmar un cambio sin haber escrito ni consultado nada, el usuario recibe “No pude confirmar que el cambio quedara guardado…”, nunca la afirmación falsa.
+  - Los borradores rechazados y las correcciones no se guardan en el historial.
+- Temperatura 0.2 para respuestas más deterministas.
 
 ### 10.3 Catálogo de herramientas
 
@@ -646,7 +653,7 @@ Los nombres y argumentos van en español para reducir ambigüedad con el usuario
 | `registrar_gasto_extra` | `nombre`, `monto`, `categoria?`, `fecha?` | `POST /api/expenses` |
 | `editar_gasto_extra` | `id`, `nombre?`, `monto?`, `categoria?` (`sin_categoria` la quita), `fecha?` | `PATCH /api/expenses/{id}` |
 | `eliminar_gasto_extra` | `id` | `DELETE /api/expenses/{id}` |
-| `consultar_gastos` | `vista` (`recientes`\|`por_dias`\|`por_categoria`\|`por_monto`), `dias?`, `periodo?`, `categoria?` (solo `por_monto`), `limite?` | `GET /api/expenses`, `/recent`, `/by-day`, `/by-category` |
+| `consultar_gastos` | `vista` (`recientes`\|`por_dias`\|`por_categoria`\|`por_monto`), `dias?`, `periodo?`, `limite?`; solo para `por_monto`: `categoria?`, `orden?` (`desc`\|`asc`), `desde?`, `hasta?` | `GET /api/expenses`, `/recent`, `/by-day`, `/by-category` |
 | `definir_limite_mensual` | `monto` | `PUT /api/limits/monthly` |
 | `consultar_limite` | — | `GET /api/limits/current` |
 | `consultar_ahorro` | — | `GET /api/savings` |
@@ -664,6 +671,15 @@ Los nombres y argumentos van en español para reducir ambigüedad con el usuario
 8. Menciona los avisos de límite solo si vienen en el resultado de la herramienta o como notificación; no los inventes.
 9. No des asesoría financiera, inversiones ni créditos; limítate a registrar y consultar.
 10. Cierra con el dato más útil (saldo, total o siguiente paso), sin repetir todo el JSON.
+
+Reglas de ejecución (agregadas tras el incidente del 2026-11-24):
+
+- A. Nunca afirmar un cambio sin haber llamado en ese turno la herramienta y recibido `ok: true`.
+- B. Cuando el usuario confirma (“sí”, “déjala en salidas”), la siguiente acción es llamar las herramientas, no redactar un resumen.
+- C. Una llamada por elemento cuando hay varios gastos o facturas.
+- D. Cifras, listas y saldos se consultan en el mismo turno; el historial no es fuente de datos.
+- E. Si algo no aparece en el backend, es que no se guardó; no culpar al sistema.
+- Afirmaciones del usuario como “ya pagué el arriendo” o “el límite será de 450.000” cuentan como confirmación.
 
 ---
 

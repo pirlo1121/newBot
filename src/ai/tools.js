@@ -163,12 +163,15 @@ export const TOOLS = [
     name: 'consultar_gastos',
     description:
       'Consulta gastos extras. vista: "recientes" (últimos registrados), "por_dias" (hoy y los N días anteriores), ' +
-      '"por_categoria" (totales y porcentajes del mes), "por_monto" (de mayor a menor).',
+      '"por_categoria" (totales y porcentajes del mes), "por_monto" (ordenados por monto; con desde/hasta para un rango de fechas).',
     schema: z.object({
       vista: z.enum(['recientes', 'por_dias', 'por_categoria', 'por_monto']),
       dias: z.number().int().min(0).max(31).optional().describe('Para por_dias: días hacia atrás además de hoy (por defecto 3).'),
       periodo: periodo.optional(),
       categoria: categoriaFiltro.optional().describe('Para por_monto: filtra por categoría.'),
+      orden: z.enum(['desc', 'asc']).optional().describe('Para por_monto: "desc" de mayor a menor (por defecto), "asc" de menor a mayor.'),
+      desde: fecha.optional().describe('Para por_monto: fecha inicial YYYY-MM-DD (incluida).'),
+      hasta: fecha.optional().describe('Para por_monto: fecha final YYYY-MM-DD (incluida).'),
       limite: z.number().int().min(1).max(MAX_LIST_ITEMS).optional()
     }),
     run: (a, api) => {
@@ -182,8 +185,10 @@ export const TOOLS = [
         default:
           return api.get('/api/expenses', {
             sort: 'amount',
-            order: 'desc',
+            order: a.orden ?? 'desc',
             period: a.periodo,
+            from: a.desde,
+            to: a.hasta,
             category: a.categoria,
             limit: a.limite ?? MAX_LIST_ITEMS
           });
